@@ -2,20 +2,35 @@ import os
 import yt_dlp
 import zipfile
 from flask import Flask, jsonify, request, send_file
-from flask_cors import CORS  # Import CORS
+from flask_cors import CORS  # 👈 Import CORS
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app)
 
-# Directory setup
+# Create a directory to store the downloaded files temporarily
 DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+if not os.path.exists(DOWNLOAD_DIR):
+    os.makedirs(DOWNLOAD_DIR)
 
 @app.route('/download_playlist', methods=['POST'])
 def download_playlist():
     playlist_url = request.json.get('playlist_url')
+    
     if not playlist_url:
         return jsonify({'error': 'Playlist URL is required'}), 400
+    
+    # First, extract playlist info to get the title
+    try:
+        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            info_dict = ydl.extract_info(playlist_url, download=False)
+            playlist_title = info_dict.get('title', 'playlist')
+    except Exception as e:
+        return jsonify({'error': f'Failed to retrieve playlist info: {str(e)}'}), 500
+
+    # Sanitize the title to use as filename
+    safe_title = "".join(c if c.isalnum() or c in " ._-" else "_" for c in playlist_title)
+    zip_filename = f'{safe_title}.zip'
+    zip_filepath = os.path.join(DOWNLOAD_DIR, zip_filename)
 
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -34,16 +49,16 @@ def download_playlist():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-    zip_filename = 'playlist.zip'
-    zip_filepath = os.path.join(DOWNLOAD_DIR, zip_filename)
-
+    # Create the ZIP file with downloaded audio files
     with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for filename in os.listdir(DOWNLOAD_DIR):
-            if filename.endswith('.mp3'):
-                file_path = os.path.join(DOWNLOAD_DIR, filename)
-                zipf.write(file_path, filename)
+        for foldername, subfolders, filenames in os.walk(DOWNLOAD_DIR):
+            for filename in filenames:
+                if filename.endswith(".mp3"):
+                    file_path = os.path.join(foldername, filename)
+                    zipf.write(file_path, os.path.relpath(file_path, DOWNLOAD_DIR))
 
     return send_file(zip_filepath, as_attachment=True)
 
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    app.run(debug=True)
